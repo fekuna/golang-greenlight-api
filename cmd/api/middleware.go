@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/fekuna/greenlight-api/internal/data"
-	"github.com/fekuna/greenlight-api/internal/validator"
 	"github.com/felixge/httpsnoop"
+	"github.com/pascaldekloe/jwt"
 	"github.com/tomasen/realip"
 	"golang.org/x/time/rate"
 )
@@ -103,14 +103,34 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 
 		token := headerParts[1]
 
-		v := validator.New()
-
-		if data.ValidateTokenPlaintext(v, token); !v.Valid() {
+		claims, err := jwt.HMACCheck([]byte(token), []byte(app.config.jwt.secret))
+		if err != nil {
 			app.invalidAuthenticationTokenResponse(w, r)
 			return
 		}
 
-		user, err := app.models.Users.GetForToken(data.ScopeAuthentication, token)
+		if !claims.Valid(time.Now()) {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+
+		if claims.Issuer != "greenlight.alfan.net" {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+
+		if !claims.AcceptAudience("greenlight.alfan.net") {
+			app.invalidAuthenticationTokenResponse(w, r)
+			return
+		}
+
+		userID, err := strconv.ParseInt(claims.Subject, 10, 64)
+		if err != nil {
+			app.serverErrorResponse(w, r, err)
+			return
+		}
+
+		user, err := app.models.Users.GetById(userID)
 		if err != nil {
 			switch {
 			case errors.Is(err, data.ErrRecordNotFound):
@@ -124,6 +144,28 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 		r = app.contextSetUser(r, user)
 
 		next.ServeHTTP(w, r)
+
+		// v := validator.New()
+
+		// if data.ValidateTokenPlaintext(v, token); !v.Valid() {
+		// 	app.invalidAuthenticationTokenResponse(w, r)
+		// 	return
+		// }
+
+		// user, err := app.models.Users.GetForToken(data.ScopeAuthentication, token)
+		// if err != nil {
+		// 	switch {
+		// 	case errors.Is(err, data.ErrRecordNotFound):
+		// 		app.invalidAuthenticationTokenResponse(w, r)
+		// 	default:
+		// 		app.serverErrorResponse(w, r, err)
+		// 	}
+		// 	return
+		// }
+
+		// r = app.contextSetUser(r, user)
+
+		// next.ServeHTTP(w, r)
 	})
 }
 
